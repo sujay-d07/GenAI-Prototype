@@ -67,14 +67,40 @@ class LegalRAGPipeline:
         
         logger.info("Enhanced Legal RAG Pipeline initialized successfully")
     
-    def process_new_documents_with_categories(self, file_paths: List[str], 
-                                            store_prefix: str = None) -> Dict[str, Any]:
+    def process_new_documents_with_categories(self, file_paths: List[str] = None, 
+                                            r2_keys: List[str] = None,
+                                            file_sources: List[str] = None,
+                                            store_prefix: str = None,
+                                            upload_local_to_r2: bool = False) -> Dict[str, Any]:
         """
         Complete enhanced pipeline: Load documents -> Categorize -> Create category-specific stores -> Setup RAG
+        
+        Args:
+            file_paths: List of local file paths (optional)
+            r2_keys: List of R2 storage keys (optional)
+            file_sources: List of mixed sources (local paths or R2 keys) (optional)
+            store_prefix: Prefix for vector stores
+            upload_local_to_r2: Whether to upload local files to R2 storage
         """
         
-        if not file_paths:
-            raise ValueError("No file paths provided")
+        # Validate input parameters
+        total_sources = sum(1 for x in [file_paths, r2_keys, file_sources] if x)
+        if total_sources != 1:
+            raise ValueError("Provide exactly one of: file_paths, r2_keys, or file_sources")
+        
+        # Determine the document sources to use
+        if file_sources:
+            sources_list = file_sources
+            source_type = "hybrid"
+        elif r2_keys:
+            sources_list = r2_keys
+            source_type = "r2"
+        else:
+            sources_list = file_paths
+            source_type = "local"
+        
+        if not sources_list:
+            raise ValueError("No document sources provided")
         
         # Generate store prefix if not provided
         if not store_prefix:
@@ -82,15 +108,38 @@ class LegalRAGPipeline:
             store_prefix = f"legal_docs_{timestamp}"
         
         try:
-            logger.info(f"Starting enhanced document processing pipeline for {len(file_paths)} files")
+            logger.info(f"Starting enhanced document processing pipeline for {len(sources_list)} sources ({source_type})")
             
             # Step 1: Load and process documents with categorization
             logger.info("Step 1: Loading, processing and categorizing documents...")
-            documents, categorizations = self.document_processor.load_multiple_documents(
-                file_paths, categorize=True
-            )
             
-            # Step 2: Split documents into chunks
+            if source_type == "hybrid":
+                documents, categorizations = self.document_processor.load_documents_hybrid(
+                    sources_list, categorize=True, upload_local_to_r2=upload_local_to_r2
+                )
+            elif source_type == "r2":
+                documents, categorizations = self.document_processor.load_multiple_documents_from_r2(
+                    sources_list, categorize=True
+                )
+            else:  # local files
+                documents, categorizations = self.document_processor.load_multiple_documents(
+                    sources_list, categorize=True
+                )
+                
+                # Upload to R2 if requested
+                if upload_local_to_r2 and self.config.USE_R2_STORAGE:
+                    logger.info("Uploading local documents to R2...")
+                    for file_path in sources_list:
+                        try:
+                            upload_result = self.document_processor.upload_document_to_r2(file_path)
+                            logger.info(f"Uploaded to R2: {file_path} -> {upload_result['r2_key']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to upload {file_path} to R2: {e}")
+            
+            # Additional processing information
+            storage_info = self.document_processor.get_storage_info()
+            
+            # Step 2-6: Continue with existing processing logic...
             logger.info("Step 2: Splitting documents into chunks...")
             chunks = self.document_processor.split_documents(documents)
             
@@ -140,10 +189,15 @@ class LegalRAGPipeline:
                 "category_stats": category_stats,
                 "store_info": store_info,
                 "processing_timestamp": datetime.now().isoformat(),
+                "source_type": source_type,
+                "sources_count": len(sources_list),
+                "storage_info": storage_info,
                 "features_enabled": {
                     "categorization": True,
                     "category_specific_stores": True,
-                    "document_comparison": True
+                    "document_comparison": True,
+                    "r2_storage": self.config.USE_R2_STORAGE,
+                    "hybrid_sources": True
                 }
             }
             
@@ -433,6 +487,66 @@ class LegalRAGPipeline:
         
         return results
 
+    def upload_documents_to_r2(self, local_file_paths: List[str], add_timestamp: bool = True) -> Dict[str, Any]:
+        """Upload multiple local documents to R2 storage"""
+        
+        if not self.config.USE_R2_STORAGE:
+            raise ValueError("R2 storage is not enabled")
+        
+        results = {
+            'successful_uploads': [],
+            'failed_uploads': [],
+            'total_attempted': len(local_file_paths),
+            'upload_timestamp': datetime.now().isoformat()
+        }
+        
+        for file_path in local_file_paths:
+            try:
+                upload_result = self.document_processor.upload_document_to_r2(
+                    file_path, add_timestamp=add_timestamp
+                )
+                results['successful_uploads'].append(upload_result)
+                logger.info(f"Successfully uploaded to R2: {file_path} -> {upload_result['r2_key']}")
+                
+            except Exception as e:
+                error_info = {
+                    'file_path': file_path,
+                    'error': str(e),
+                    'timestamp': datetime.now().isoformat()
+                }
+                results['failed_uploads'].append(error_info)
+                logger.error(f"Failed to upload {file_path} to R2: {e}")
+        
+        results['success_count'] = len(results['successful_uploads'])
+        results['failure_count'] = len(results['failed_uploads'])
+        
+        logger.info(f"R2 upload completed: {results['success_count']}/{results['total_attempted']} successful")
+        return results
+    
+    def list_available_documents(self) -> Dict[str, Any]:
+        """List all available documents from both local and R2 storage"""
+        return self.document_processor.list_available_documents()
+    
+    def get_storage_information(self) -> Dict[str, Any]:
+        """Get comprehensive storage information"""
+        return self.document_processor.get_storage_info()
+    
+    def process_documents_from_r2(self, r2_keys: List[str], store_prefix: str = None) -> Dict[str, Any]:
+        """Process documents directly from R2 storage"""
+        return self.process_new_documents_with_categories(
+            r2_keys=r2_keys,
+            store_prefix=store_prefix
+        )
+    
+    def process_documents_hybrid(self, file_sources: List[str], store_prefix: str = None, 
+                               upload_local_to_r2: bool = False) -> Dict[str, Any]:
+        """Process documents from mixed sources (local files and R2 keys)"""
+        return self.process_new_documents_with_categories(
+            file_sources=file_sources,
+            store_prefix=store_prefix,
+            upload_local_to_r2=upload_local_to_r2
+        )
+
     def query_documents_by_file(self, question: str, file_path: str) -> Dict[str, Any]:
         """Query a specific file by passing its content directly to the LLM."""
         content = self._get_file_content(file_path)
@@ -456,44 +570,68 @@ def main():
         print("   🎯 Category-specific queries and analysis")
         
         print("\n📋 Available Commands:")
-        print("1. Process new documents with categorization:")
-        print("   pipeline.process_new_documents_with_categories(['file1.pdf', 'file2.docx'], 'store_name')")
+        print("1. Process local documents with categorization:")
+        print("   pipeline.process_new_documents_with_categories(file_paths=['file1.pdf', 'file2.docx'], store_prefix='store_name')")
         
-        print("\n2. Load existing category stores:")
+        print("\n2. Process documents from R2 storage:")
+        print("   pipeline.process_documents_from_r2(['documents/file1.pdf', 'documents/file2.docx'], 'store_name')")
+        
+        print("\n3. Process mixed sources (local + R2):")
+        print("   pipeline.process_documents_hybrid(['local_file.pdf', 'documents/r2_file.pdf'], upload_local_to_r2=True)")
+        
+        print("\n4. Upload local documents to R2:")
+        print("   pipeline.upload_documents_to_r2(['file1.pdf', 'file2.docx'])")
+        
+        print("\n5. Load existing category stores:")
         print("   pipeline.load_existing_category_stores('store_prefix')")
         
-        print("\n3. Query within specific category:")
+        print("\n6. Query within specific category:")
         print("   pipeline.query_category('What are the main terms?', 'contract')")
         
-        print("\n4. Query across all categories:")
+        print("\n7. Query across all categories:")
         print("   pipeline.query_documents('What are payment terms?')")
         
-        print("\n5. Compare documents between categories:")
+        print("\n8. Compare documents between categories:")
         print("   pipeline.compare_documents('Compare termination clauses', 'contract', 'policy')")
         
-        print("\n6. Category-specific analysis:")
-        print("   pipeline.get_document_summary('contract')")
-        print("   pipeline.find_key_obligations('employment')")
-        print("   pipeline.find_termination_clauses('policy')")
+        print("\n9. Storage management:")
+        print("   pipeline.list_available_documents()")
+        print("   pipeline.get_storage_information()")
         
-        print("\n7. Compare specific aspects:")
-        print("   pipeline.compare_obligations('contract', 'employment')")
-        print("   pipeline.compare_termination_clauses('contract', 'policy')")
+        print("\n10. Category-specific analysis:")
+        print("    pipeline.get_document_summary('contract')")
+        print("    pipeline.find_key_obligations('employment')")
+        print("    pipeline.find_termination_clauses('policy')")
         
-        print("\n8. Get category information:")
-        print("   pipeline.get_available_categories()")
-        print("   pipeline.get_category_info()")
+        print("\n11. Compare specific aspects:")
+        print("    pipeline.compare_obligations('contract', 'employment')")
+        print("    pipeline.compare_termination_clauses('contract', 'policy')")
         
-        print("\n9. Export categorization report:")
-        print("   pipeline.export_categorization_report()")
+        print("\n12. Get category information:")
+        print("    pipeline.get_available_categories()")
+        print("    pipeline.get_category_info()")
         
-        # Show current status
+        print("\n13. Export categorization report:")
+        print("    pipeline.export_categorization_report()")
+        
+        # Show current status with storage info
         status = pipeline.get_enhanced_pipeline_status()
+        storage_info = pipeline.get_storage_information()
+        
         print(f"\n📊 Current Status:")
         print(f"   Pipeline Ready: {status['pipeline_ready']}")
         print(f"   Available Categories: {len(status['available_categories'])}")
         print(f"   Document Categorization: {status['features']['categorization']}")
         print(f"   Document Comparison: {status['features']['document_comparison']}")
+        print(f"   R2 Storage Enabled: {storage_info['r2_enabled']}")
+        
+        if storage_info['r2_enabled']:
+            if 'r2_stats' in storage_info:
+                print(f"   R2 Documents: {storage_info['r2_stats'].get('total_documents', 0)}")
+            if 'r2_bucket' in storage_info:
+                print(f"   R2 Bucket: {storage_info['r2_bucket']}")
+        
+        print(f"   Local Documents: {storage_info['local_stats']['total_files']}")
         
         if status['available_categories']:
             print(f"   Categories: {', '.join(status['available_categories'])}")
@@ -502,24 +640,57 @@ def main():
         for category, description in pipeline.config.LEGAL_CATEGORIES.items():
             print(f"   • {category}: {description}")
         
-        print("\n🚀 Ready to process legal documents with enhanced categorization!")
-        print("   Remember to set your GEMINI_API_KEY in the .env file")
+        print("\n🚀 Ready to process legal documents with R2 storage and enhanced categorization!")
+        print("   Remember to set your GEMINI_API_KEY and R2 credentials in the .env file")
         
         # Example with dummy files (uncomment and modify for actual use):
         """
-        # Example: Process legal documents with categorization
-        file_paths = [
+        # Example 1: Process local documents and upload to R2
+        local_file_paths = [
             "documents/service_contract.pdf",
             "documents/privacy_policy.docx", 
             "documents/employment_agreement.pdf",
             "documents/terms_of_service.txt"
         ]
         
-        # Process documents with categorization
-        result = pipeline.process_new_documents_with_categories(file_paths, "my_legal_docs_2024")
+        # Process local documents with R2 upload
+        result = pipeline.process_new_documents_with_categories(
+            file_paths=local_file_paths, 
+            store_prefix="my_legal_docs_2024",
+            upload_local_to_r2=True
+        )
         print(f"Processing result: {result}")
         print(f"Categories found: {result['categories_found']}")
         
+        # Example 2: Upload documents to R2 first, then process
+        upload_results = pipeline.upload_documents_to_r2(local_file_paths)
+        r2_keys = [upload['r2_key'] for upload in upload_results['successful_uploads']]
+        
+        # Process documents directly from R2
+        result = pipeline.process_documents_from_r2(r2_keys, "r2_legal_docs_2024")
+        
+        # Example 3: Mixed source processing
+        file_sources = [
+            "local_documents/new_contract.pdf",  # Local file
+            "documents/existing_policy_20240101_120000.pdf",  # R2 key
+            "local_documents/updated_agreement.docx"  # Local file
+        ]
+        
+        result = pipeline.process_documents_hybrid(
+            file_sources, 
+            store_prefix="hybrid_legal_docs_2024",
+            upload_local_to_r2=True  # Upload local files to R2
+        )
+        
+        # Example 4: List available documents
+        available_docs = pipeline.list_available_documents()
+        print(f"Available documents: Local={available_docs['total_local']}, R2={available_docs['total_r2']}")
+        
+        # Example 5: Storage information
+        storage_info = pipeline.get_storage_information()
+        print(f"Storage info: {storage_info}")
+        
+        # Continue with analysis...
         # Query specific category
         contract_summary = pipeline.get_document_summary("contract")
         print(f"Contract Summary: {contract_summary['answer']}")

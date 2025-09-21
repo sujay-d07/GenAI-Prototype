@@ -24,6 +24,9 @@ Pillow>=10.0.0
 # Environment and utilities
 python-dotenv>=1.0.0
 
+# Cloud storage
+boto3>=1.34.0
+
 # Additional dependencies
 python-dateutil>=2.8.2
 

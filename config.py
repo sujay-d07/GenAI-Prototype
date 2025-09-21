@@ -13,11 +13,28 @@ class Config:
     
     # API Keys
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    
+    # Cloudflare R2 Configuration
+    R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+    R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+    R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+    R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL")
+    
+    # Storage settings
+    USE_R2_STORAGE = True  # Set to False to use local storage
+    R2_DOCUMENTS_PREFIX = "documents/"  # Prefix for document storage in R2
 
     @classmethod
     def validate_config(cls):
         if not cls.GEMINI_API_KEY:
             raise ValueError("GEMINI_API_KEY environment variable is not set. Please set it in your .env file or environment.")
+        
+        # Validate R2 configuration if enabled
+        if cls.USE_R2_STORAGE:
+            required_r2_vars = ['R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME', 'R2_ENDPOINT_URL']
+            missing_vars = [var for var in required_r2_vars if not getattr(cls, var)]
+            if missing_vars:
+                raise ValueError(f"R2 storage is enabled but missing environment variables: {', '.join(missing_vars)}")
     
     # Text Splitting Parameters
     CHUNK_SIZE = 1000
