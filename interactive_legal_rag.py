@@ -77,8 +77,8 @@ class InteractiveLegalRAG:
                 # Process documents with categorization
                 logger.info("Processing documents with categorization.")
             processing_result = self.pipeline.process_new_documents_with_categories(
-                documents, 
-                f"legal_docs_{self.session_timestamp}"
+                file_paths=documents, 
+                store_prefix=f"legal_docs_{self.session_timestamp}"
             )
             
             print("✅ Enhanced pipeline initialized successfully!")
@@ -235,11 +235,14 @@ class InteractiveLegalRAG:
         print("3. 🚪 Find Termination Clauses")
         print("4. ❓ Ask Custom Question")
         print("5. 🔄 Compare Documents")
-        print("6. 💬 View Conversation History")
-        print("7. 📁 Show Response Files")
-        print("8. 🏷️  Show Category Information")
-        print("9. 📄 Reload Documents")
-        print("10. ❌ Exit")
+        print("6. � Upload Documents to R2 Storage")
+        print("7. 🌩️  Process Documents from R2")
+        print("8. 📊 View Storage Information")
+        print("9. �💬 View Conversation History")
+        print("10. 📁 Show Response Files")
+        print("11. 🏷️  Show Category Information")
+        print("12. 📄 Reload Documents")
+        print("13. ❌ Exit")
         print("=" * 70)
     
     def get_category_choice(self, prompt_message="Choose category"):
@@ -474,6 +477,285 @@ class InteractiveLegalRAG:
         except Exception as e:
             print(f"❌ Error during comparison: {str(e)}")
     
+    def handle_r2_upload(self):
+        """Handle uploading local documents to R2 storage"""
+        if not self.pipeline or not self.pipeline.config.USE_R2_STORAGE:
+            print("❌ R2 storage is not enabled or pipeline not initialized.")
+            return
+        
+        print("\n📤 Upload Documents to R2 Storage")
+        print("-" * 40)
+        
+        # List local documents
+        local_docs = []
+        for file_path in self.uploads_folder.iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in self.supported_extensions:
+                local_docs.append(str(file_path))
+        
+        if not local_docs:
+            print("❌ No local documents found in uploads folder.")
+            return
+        
+        print(f"Found {len(local_docs)} local documents:")
+        for i, doc_path in enumerate(local_docs, 1):
+            print(f"{i}. {Path(doc_path).name}")
+        
+        print("\nUpload options:")
+        print("1. Upload all documents")
+        print("2. Select specific documents")
+        print("3. Cancel")
+        
+        try:
+            choice = input("\nChoose option (1-3): ").strip()
+            
+            if choice == "1":
+                # Upload all documents
+                files_to_upload = local_docs
+            elif choice == "2":
+                # Select specific documents
+                files_to_upload = []
+                print("\nSelect documents to upload (enter numbers separated by commas):")
+                selection = input("Example: 1,3,5 or 'all' for all: ").strip()
+                
+                if selection.lower() == 'all':
+                    files_to_upload = local_docs
+                else:
+                    try:
+                        indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                        files_to_upload = [local_docs[i] for i in indices if 0 <= i < len(local_docs)]
+                        
+                        if not files_to_upload:
+                            print("❌ No valid files selected.")
+                            return
+                    except (ValueError, IndexError):
+                        print("❌ Invalid selection format.")
+                        return
+            elif choice == "3":
+                print("Upload cancelled.")
+                return
+            else:
+                print("❌ Invalid choice.")
+                return
+            
+            print(f"\n📤 Uploading {len(files_to_upload)} documents to R2...")
+            
+            # Upload documents
+            upload_results = self.pipeline.upload_documents_to_r2(
+                files_to_upload,
+                add_timestamp=True  # Avoid filename conflicts
+            )
+            
+            print(f"\n✅ Upload completed!")
+            print(f"   Successfully uploaded: {upload_results['success_count']}")
+            print(f"   Failed uploads: {upload_results['failure_count']}")
+            
+            if upload_results['successful_uploads']:
+                print(f"\n📋 Successfully uploaded documents:")
+                for upload in upload_results['successful_uploads']:
+                    print(f"   • {upload['original_filename']} → {upload['r2_key']}")
+            
+            if upload_results['failed_uploads']:
+                print(f"\n❌ Failed uploads:")
+                for failure in upload_results['failed_uploads']:
+                    print(f"   • {Path(failure['file_path']).name}: {failure['error']}")
+            
+            # Ask if user wants to process the uploaded documents
+            if upload_results['successful_uploads']:
+                process_choice = input(f"\n🤔 Process the uploaded documents now? (y/n): ").strip().lower()
+                if process_choice == 'y':
+                    r2_keys = [upload['r2_key'] for upload in upload_results['successful_uploads']]
+                    print(f"\n🔄 Processing {len(r2_keys)} documents from R2...")
+                    
+                    try:
+                        processing_result = self.pipeline.process_documents_from_r2(
+                            r2_keys,
+                            f"r2_upload_{self.session_timestamp}"
+                        )
+                        
+                        print(f"✅ Processing completed!")
+                        print(f"   Documents processed: {processing_result['documents_processed']}")
+                        print(f"   Categories found: {', '.join(processing_result['categories_found'])}")
+                        
+                        # Update pipeline state
+                        self.pipeline.pipeline_ready = True
+                        
+                    except Exception as e:
+                        print(f"❌ Error processing uploaded documents: {str(e)}")
+        
+        except Exception as e:
+            print(f"❌ Error during R2 upload: {str(e)}")
+    
+    def handle_r2_processing(self):
+        """Handle processing documents directly from R2 storage"""
+        if not self.pipeline or not self.pipeline.config.USE_R2_STORAGE:
+            print("❌ R2 storage is not enabled or pipeline not initialized.")
+            return
+        
+        print("\n🌩️  Process Documents from R2 Storage")
+        print("-" * 45)
+        
+        try:
+            # List available R2 documents
+            available_docs = self.pipeline.list_available_documents()
+            r2_docs = available_docs.get('r2_documents', [])
+            
+            if not r2_docs:
+                print("❌ No documents found in R2 storage.")
+                return
+            
+            print(f"Found {len(r2_docs)} documents in R2 storage:")
+            for i, doc in enumerate(r2_docs, 1):
+                size_mb = doc['size'] / (1024 * 1024)
+                print(f"{i}. {doc['filename']} ({size_mb:.2f} MB)")
+            
+            print("\nProcessing options:")
+            print("1. Process all R2 documents")
+            print("2. Select specific documents")
+            print("3. Cancel")
+            
+            choice = input("\nChoose option (1-3): ").strip()
+            
+            if choice == "1":
+                # Process all documents
+                r2_keys = [doc['r2_key'] for doc in r2_docs]
+            elif choice == "2":
+                # Select specific documents
+                print("\nSelect documents to process (enter numbers separated by commas):")
+                selection = input("Example: 1,3,5 or 'all' for all: ").strip()
+                
+                if selection.lower() == 'all':
+                    r2_keys = [doc['r2_key'] for doc in r2_docs]
+                else:
+                    try:
+                        indices = [int(x.strip()) - 1 for x in selection.split(',')]
+                        r2_keys = [r2_docs[i]['r2_key'] for i in indices if 0 <= i < len(r2_docs)]
+                        
+                        if not r2_keys:
+                            print("❌ No valid documents selected.")
+                            return
+                    except (ValueError, IndexError):
+                        print("❌ Invalid selection format.")
+                        return
+            elif choice == "3":
+                print("Processing cancelled.")
+                return
+            else:
+                print("❌ Invalid choice.")
+                return
+            
+            print(f"\n🔄 Processing {len(r2_keys)} documents from R2...")
+            
+            # Process documents from R2
+            processing_result = self.pipeline.process_documents_from_r2(
+                r2_keys,
+                f"r2_process_{self.session_timestamp}"
+            )
+            
+            print(f"\n✅ Processing completed!")
+            print(f"   Documents processed: {processing_result['documents_processed']}")
+            print(f"   Chunks created: {processing_result['chunks_created']}")
+            print(f"   Categories found: {', '.join(processing_result['categories_found'])}")
+            
+            # Show category distribution
+            print(f"\n📈 Category Distribution:")
+            for category, count in processing_result['category_distribution'].items():
+                category_name = self.pipeline.config.LEGAL_CATEGORIES.get(category, category)
+                print(f"   • {category_name}: {count} documents")
+            
+            # Update pipeline state
+            self.pipeline.pipeline_ready = True
+            
+        except Exception as e:
+            print(f"❌ Error processing R2 documents: {str(e)}")
+    
+    def handle_storage_info(self):
+        """Display comprehensive storage information"""
+        print("\n📊 Storage Information")
+        print("=" * 40)
+        
+        if not self.pipeline:
+            print("❌ Pipeline not initialized.")
+            return
+        
+        try:
+            storage_info = self.pipeline.get_storage_information()
+            
+            print(f"🌩️  R2 Storage: {'Enabled' if storage_info['r2_enabled'] else 'Disabled'}")
+            
+            if storage_info['r2_enabled']:
+                if 'r2_stats' in storage_info:
+                    r2_stats = storage_info['r2_stats']
+                    print(f"   📄 R2 Documents: {r2_stats.get('total_documents', 0)}")
+                    print(f"   💾 R2 Storage Used: {r2_stats.get('total_size_mb', 0)} MB")
+                    print(f"   🪣 R2 Bucket: {storage_info.get('r2_bucket', 'N/A')}")
+                    
+                    if r2_stats.get('file_types'):
+                        print(f"   📁 File Types in R2:")
+                        for ext, count in r2_stats['file_types'].items():
+                            print(f"     • {ext}: {count} files")
+                else:
+                    print(f"   ⚠️  R2 Stats: {storage_info.get('r2_error', 'Unknown error')}")
+            
+            # Local storage info
+            local_stats = storage_info.get('local_stats', {})
+            print(f"\n💻 Local Storage:")
+            print(f"   📄 Local Documents: {local_stats.get('total_files', 0)}")
+            if local_stats.get('total_size'):
+                local_size_mb = local_stats['total_size'] / (1024 * 1024)
+                print(f"   💾 Local Storage Used: {local_size_mb:.2f} MB")
+            print(f"   📂 Local Path: {storage_info.get('local_storage_path', 'uploads')}")
+            
+            # Pipeline status
+            if hasattr(self.pipeline, 'pipeline_ready'):
+                print(f"\n🚀 Pipeline Status:")
+                print(f"   Ready: {self.pipeline.pipeline_ready}")
+                if self.pipeline.pipeline_ready:
+                    categories = self.pipeline.get_available_categories()
+                    print(f"   Categories: {len(categories)} ({', '.join(categories)})")
+            
+        except Exception as e:
+            print(f"❌ Error retrieving storage information: {str(e)}")
+    
+    def get_multiple_file_choice(self, prompt_message="Choose files"):
+        """Prompt user to select multiple files from uploads folder."""
+        files = self.find_legal_documents()
+        if not files:
+            print("❌ No files found in uploads folder.")
+            return []
+        
+        print(f"\n{prompt_message}:")
+        for i, file in enumerate(files, 1):
+            print(f"{i}. {os.path.basename(file)}")
+        
+        print("\nEnter file numbers separated by commas (e.g., 1,3,5) or 'all' for all files:")
+        
+        while True:
+            choice = input("Selection: ").strip()
+            
+            if choice.lower() == 'all':
+                return files
+            
+            try:
+                indices = [int(x.strip()) - 1 for x in choice.split(',')]
+                selected_files = []
+                
+                for idx in indices:
+                    if 0 <= idx < len(files):
+                        selected_files.append(files[idx])
+                    else:
+                        print(f"❌ Invalid file number: {idx + 1}")
+                        return []
+                
+                if selected_files:
+                    return selected_files
+                else:
+                    print("❌ No valid files selected.")
+                    return []
+                    
+            except ValueError:
+                print("❌ Invalid format. Please enter numbers separated by commas or 'all'.")
+                continue
+    
     def show_conversation_history(self):
         """Display conversation history"""
         print("\n💬 CONVERSATION HISTORY")
@@ -578,7 +860,7 @@ class InteractiveLegalRAG:
             self.display_menu()
             
             try:
-                choice = input("\n🎯 Choose an option (1-10): ").strip()
+                choice = input("\n🎯 Choose an option (1-13): ").strip()
                 
                 if choice == '1':
                     self.handle_document_summary()
@@ -591,12 +873,18 @@ class InteractiveLegalRAG:
                 elif choice == '5':
                     self.handle_document_comparison()
                 elif choice == '6':
-                    self.show_conversation_history()
+                    self.handle_r2_upload()
                 elif choice == '7':
-                    self.show_response_files()
+                    self.handle_r2_processing()
                 elif choice == '8':
-                    self.show_category_information()
+                    self.handle_storage_info()
                 elif choice == '9':
+                    self.show_conversation_history()
+                elif choice == '10':
+                    self.show_response_files()
+                elif choice == '11':
+                    self.show_category_information()
+                elif choice == '12':
                     # Reload documents
                     print("📄 Reloading documents...")
                     documents = self.find_legal_documents()
@@ -604,7 +892,7 @@ class InteractiveLegalRAG:
                         print("✅ Documents reloaded successfully!")
                     else:
                         print("❌ Failed to reload documents.")
-                elif choice == '10':
+                elif choice == '13':
                     print("\n👋 Saving conversation summary...")
                     summary_file = self.save_conversation_summary()
                     print(f"💾 Conversation summary saved to: {summary_file}")
@@ -620,7 +908,7 @@ class InteractiveLegalRAG:
                     print("🙏 Thank you for using Enhanced Legal RAG Pipeline!")
                     break
                 else:
-                    print("❌ Invalid choice. Please select 1-10.")
+                    print("❌ Invalid choice. Please select 1-13.")
                     
             except KeyboardInterrupt:
                 print("\n\n👋 Goodbye!")
