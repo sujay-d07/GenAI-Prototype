@@ -211,8 +211,21 @@ class CategoryAwareLegalRAGChain:
             logger.info(f"Processing query for category '{category}': {question[:100]}...")
             
             # Execute the category-specific retrieval chain
+
             response = self.category_chains[category].invoke({"question": question})
             logger.info(f"Raw chain response: {response}")
+
+            # Debug: Log retrieved documents and context
+            if isinstance(response, dict):
+                sources = response.get("source_documents", [])
+                logger.info(f"Retrieved {len(sources)} source documents for category '{category}'")
+                if sources:
+                    preview = sources[0].page_content[:300] if hasattr(sources[0], 'page_content') else str(sources[0])[:300]
+                    logger.info(f"First document preview: {preview}")
+                else:
+                    logger.warning(f"No documents retrieved for category '{category}'. Context will be empty.")
+            else:
+                logger.warning(f"Response is not a dict, cannot log source documents.")
 
             # Handle both dict and string responses
             if isinstance(response, dict):
@@ -581,49 +594,67 @@ Provide a detailed, structured comparison, highlighting similarities, difference
         
         return self.rag_chain.compare_documents(question, category1, category2)
     
-    def summarize_documents(self, category: str = None) -> Dict[str, Any]:
-        """Get a summary of documents, optionally within a specific category"""
-        
+    def summarize_documents(self, category: str = None, context: str = None) -> Dict[str, Any]:
+        """Get a summary of documents, optionally within a specific category or direct context."""
         summary_question = (
             "Please provide a comprehensive summary of all the legal documents, "
             "including the main parties involved, key terms and conditions, "
             "important obligations, rights, and any critical deadlines or clauses."
         )
-        
+        if context:
+            return self.ask_question_with_context(summary_question, context)
         return self.ask_question(summary_question, category)
     
-    def explain_clause(self, clause_description: str, category: str = None) -> Dict[str, Any]:
-        """Explain a specific clause, optionally within a specific category"""
-        
+    def explain_clause(self, clause_description: str, category: str = None, context: str = None) -> Dict[str, Any]:
+        """Explain a specific clause, optionally within a specific category or direct context"""
         explanation_question = (
             f"Please find and explain the clause or section related to '{clause_description}'. "
             "Quote the relevant text and then explain what it means in simple terms, "
             "including any implications or important details."
         )
-        
+        if context:
+            return self.ask_question_with_context(explanation_question, context)
         return self.ask_question(explanation_question, category)
     
-    def find_obligations(self, category: str = None) -> Dict[str, Any]:
-        """Find obligations, optionally within a specific category"""
-        
+    def find_obligations(self, category: str = None, context: str = None) -> Dict[str, Any]:
+        """Find obligations, optionally within a specific category or direct context"""
         obligations_question = (
             "What are the key obligations and responsibilities for each party "
             "mentioned in these legal documents? Please organize by party and "
             "include specific requirements, deadlines, and consequences."
         )
-        
+        if context:
+            return self.ask_question_with_context(obligations_question, context)
         return self.ask_question(obligations_question, category)
     
-    def find_termination_terms(self, category: str = None) -> Dict[str, Any]:
-        """Find termination clauses, optionally within a specific category"""
-        
+    def find_termination_terms(self, category: str = None, context: str = None) -> Dict[str, Any]:
+        """Find termination clauses, optionally within a specific category or direct context"""
         termination_question = (
             "What are the termination conditions and procedures outlined in these documents? "
             "Include information about notice periods, conditions that trigger termination, "
             "and any penalties or procedures that must be followed."
         )
-        
+        if context:
+            return self.ask_question_with_context(termination_question, context)
         return self.ask_question(termination_question, category)
+
+    def ask_question_with_context(self, question: str, context: str) -> Dict[str, Any]:
+        """Ask the LLM a question with direct context (file content)."""
+        chat_history_str = ""
+        prompt = self.rag_chain.standard_prompt.format(
+            context=context,
+            chat_history=chat_history_str,
+            question=question
+        )
+        logger.info(f"Direct context provided to LLM. Context length: {len(context)} characters.")
+        answer = self.rag_chain.llm.invoke(prompt)
+        return {
+            "question": question,
+            "answer": answer,
+            "context_length": len(context),
+            "sources": [],
+            "chat_history_length": 0
+        }
     
     def compare_obligations(self, category1: str, category2: str) -> Dict[str, Any]:
         """Compare obligations between two document categories"""

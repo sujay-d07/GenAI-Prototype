@@ -25,6 +25,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class LegalRAGPipeline:
+    def _get_file_content(self, file_path: str) -> str:
+        """Utility to load and return the full text content of a file."""
+        from document_processor import DocumentProcessor
+        processor = DocumentProcessor()
+        docs, _ = processor.load_single_document(file_path, categorize=False)
+        return "\n\n".join([doc.page_content for doc in docs]) if docs else ""
     def compare_documents_by_file(self, question: str, file_path1: str, file_path2: str) -> Dict[str, Any]:
         """Compare two specific documents by file path (not by category)"""
         # Load both documents (no categorization needed)
@@ -264,32 +270,45 @@ class LegalRAGPipeline:
         
         if not self.pipeline_ready:
             raise ValueError("Pipeline not ready. Process documents first.")
-        
         return self.analyzer.summarize_documents(category)
+
+    def get_document_summary_by_file(self, file_path: str) -> Dict[str, Any]:
+        """Get a summary of a specific file by passing its content directly to the LLM."""
+        content = self._get_file_content(file_path)
+        return self.analyzer.summarize_documents(context=content)
     
     def explain_specific_clause(self, clause_description: str, category: str = None) -> Dict[str, Any]:
         """Explain a specific clause, optionally within a category"""
         
         if not self.pipeline_ready:
             raise ValueError("Pipeline not ready. Process documents first.")
-        
         return self.analyzer.explain_clause(clause_description, category)
+
+    def explain_clause_by_file(self, clause_description: str, file_path: str) -> Dict[str, Any]:
+        content = self._get_file_content(file_path)
+        return self.analyzer.explain_clause(clause_description, context=content)
     
     def find_key_obligations(self, category: str = None) -> Dict[str, Any]:
         """Find key obligations, optionally within a category"""
         
         if not self.pipeline_ready:
             raise ValueError("Pipeline not ready. Process documents first.")
-        
         return self.analyzer.find_obligations(category)
+
+    def find_obligations_by_file(self, file_path: str) -> Dict[str, Any]:
+        content = self._get_file_content(file_path)
+        return self.analyzer.find_obligations(context=content)
     
     def find_termination_clauses(self, category: str = None) -> Dict[str, Any]:
         """Find termination clauses, optionally within a category"""
         
         if not self.pipeline_ready:
             raise ValueError("Pipeline not ready. Process documents first.")
-        
         return self.analyzer.find_termination_terms(category)
+
+    def find_termination_clauses_by_file(self, file_path: str) -> Dict[str, Any]:
+        content = self._get_file_content(file_path)
+        return self.analyzer.find_termination_terms(context=content)
     
     # New comparison methods
     def compare_obligations(self, category1: str, category2: str) -> Dict[str, Any]:
@@ -413,6 +432,11 @@ class LegalRAGPipeline:
             logger.info("Current stores deleted, pipeline reset")
         
         return results
+
+    def query_documents_by_file(self, question: str, file_path: str) -> Dict[str, Any]:
+        """Query a specific file by passing its content directly to the LLM."""
+        content = self._get_file_content(file_path)
+        return self.analyzer.ask_question_with_context(question, content)
 
 def main():
     """Example usage of the Enhanced Legal RAG Pipeline"""

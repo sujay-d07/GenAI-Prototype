@@ -11,6 +11,24 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class InteractiveLegalRAG:
+    def get_file_choice(self, prompt_message="Choose file"):
+        """Prompt user to select a file from uploads folder."""
+        files = self.find_legal_documents()
+        if not files:
+            print("❌ No files found in uploads folder.")
+            return None
+        print(f"\n{prompt_message}:")
+        for i, file in enumerate(files, 1):
+            print(f"{i}. {os.path.basename(file)}")
+        while True:
+            choice = input(f"\nEnter file number (1-{len(files)}): ").strip()
+            try:
+                idx = int(choice)
+                if 1 <= idx <= len(files):
+                    return files[idx - 1]
+            except ValueError:
+                pass
+            print("❌ Invalid choice. Please enter a valid number.")
     def __init__(self, uploads_folder="uploads", output_folder="responses"):
         """
         Initialize Enhanced Interactive Legal RAG Pipeline with Categories and Comparison
@@ -104,10 +122,8 @@ class InteractiveLegalRAG:
         content += f"QUESTION: {question}\n"
         content += f"{separator}\n"
         # Robustly extract answer for single or multi-category
-        answer = None
-        if 'answer' in response:
-            answer = response['answer']
-        elif 'category_results' in response:
+        answer = response.get('answer') or response.get('content') or getattr(response, 'content', None)
+        if not answer and 'category_results' in response:
             # Aggregate answers from all categories
             answers = []
             for cat, res in response['category_results'].items():
@@ -116,7 +132,7 @@ class InteractiveLegalRAG:
                 elif isinstance(res, dict) and 'error' in res:
                     answers.append(f"[{cat.upper()}]:\nError: {res['error']}\n")
             answer = '\n'.join(answers) if answers else 'No answers available.'
-        else:
+        if not answer:
             answer = str(response)
         content += f"ANSWER:\n{answer}\n"
         
@@ -157,10 +173,16 @@ class InteractiveLegalRAG:
             log_answer = '\n'.join(answers) if answers else 'No answers available.'
         else:
             log_answer = str(response)
+        # Ensure answer is always a string for conversation log
+        log_answer_str = log_answer
+        if hasattr(log_answer_str, 'content'):
+            log_answer_str = log_answer_str.content
+        elif not isinstance(log_answer_str, str):
+            log_answer_str = str(log_answer_str)
         self.conversation_log.append({
             'timestamp': timestamp,
             'question': question,
-            'answer': log_answer,
+            'answer': log_answer_str,
             'sources': len(response.get('sources', [])),
             'type': response_type,
             'category': response.get('category', response.get('category1', 'N/A'))
@@ -208,11 +230,11 @@ class InteractiveLegalRAG:
                 print(f"📂 Available Categories: {', '.join(categories)}")
                 print("-" * 70)
         
-        print("1. 📋 Get Document Summary (All or Specific Category)")
-        print("2. ⚖️  Find Key Obligations (All or Specific Category)")
-        print("3. 🚪 Find Termination Clauses (All or Specific Category)")
-        print("4. ❓ Ask Custom Question (All or Specific Category)")
-        print("5. 🔄 Compare Documents Between Categories")
+        print("1. 📋 Get Document Summary")
+        print("2. ⚖️  Find Key Obligations")
+        print("3. 🚪 Find Termination Clauses")
+        print("4. ❓ Ask Custom Question")
+        print("5. 🔄 Compare Documents")
         print("6. 💬 View Conversation History")
         print("7. 📁 Show Response Files")
         print("8. 🏷️  Show Category Information")
@@ -293,136 +315,85 @@ class InteractiveLegalRAG:
             return None, None
     
     def handle_document_summary(self):
-        """Handle document summary request with category selection"""
-        category = self.get_category_choice("📋 Select category for summary")
-        
-        if category is False:
+        """Handle document summary request for a specific file"""
+        file_path = self.get_file_choice("📋 Select file for summary")
+        if not file_path:
             return
-        
-        print(f"\n📋 Generating document summary{f' for {category}' if category else ' (all categories)'}...")
-        response = self.pipeline.get_document_summary(category)
-
-        category_text = f" - {category.upper()}" if category else " - ALL CATEGORIES"
-        print(f"\n📄 DOCUMENT SUMMARY{category_text}:")
+        print(f"\n📋 Generating document summary for {os.path.basename(file_path)}...")
+        response = self.pipeline.get_document_summary_by_file(file_path)
+        print(f"\n📄 DOCUMENT SUMMARY - {os.path.basename(file_path)}:")
         print("-" * 50)
-
-        # Robustly extract answer for single or multi-category
-        answer = None
-        if 'answer' in response:
-            answer = response['answer']
-        elif 'category_results' in response:
-            # Aggregate answers from all categories
-            answers = []
-            for cat, res in response['category_results'].items():
-                if isinstance(res, dict) and 'answer' in res:
-                    answers.append(f"[{cat.upper()}]:\n{res['answer']}\n")
-                elif isinstance(res, dict) and 'error' in res:
-                    answers.append(f"[{cat.upper()}]:\nError: {res['error']}\n")
-            answer = '\n'.join(answers) if answers else 'No answers available.'
-        else:
-            answer = str(response)
-
+        answer = response.get('answer') or response.get('content') or getattr(response, 'content', None) or str(response)
         print(answer)
-
-        # Save to file
-        response_type = f"summary_{category}" if category else "summary_all"
-        question = f"Generate a summary of {category if category else 'all'} documents"
+        response_type = f"summary_{os.path.basename(file_path)}"
+        question = f"Generate a summary of {os.path.basename(file_path)}"
         filepath = self.save_response_to_file(question, response, response_type)
         print(f"\n💾 Response saved to: {filepath}")
-
         return response
     
     def handle_key_obligations(self):
-        """Handle key obligations request with category selection"""
-        category = self.get_category_choice("⚖️  Select category for obligations")
-        
-        if category is False:
+        """Handle key obligations request for a specific file"""
+        file_path = self.get_file_choice("⚖️  Select file for obligations")
+        if not file_path:
             return
-        
-        print(f"\n⚖️  Finding key obligations{f' for {category}' if category else ' (all categories)'}...")
-        response = self.pipeline.find_key_obligations(category)
-        
-        category_text = f" - {category.upper()}" if category else " - ALL CATEGORIES"
-        print(f"\n📜 KEY OBLIGATIONS{category_text}:")
+        print(f"\n⚖️  Finding key obligations for {os.path.basename(file_path)}...")
+        response = self.pipeline.find_obligations_by_file(file_path)
+        print(f"\n📜 KEY OBLIGATIONS - {os.path.basename(file_path)}:")
         print("-" * 50)
-        print(response['answer'])
-        
-        # Save to file
-        response_type = f"obligations_{category}" if category else "obligations_all"
-        question = f"Find key obligations in {category if category else 'all'} documents"
+        answer = response.get('answer') or response.get('content') or getattr(response, 'content', None) or str(response)
+        print(answer)
+        response_type = f"obligations_{os.path.basename(file_path)}"
+        question = f"Find key obligations in {os.path.basename(file_path)}"
         filepath = self.save_response_to_file(question, response, response_type)
         print(f"\n💾 Response saved to: {filepath}")
-        
         return response
     
     def handle_termination_clauses(self):
-        """Handle termination clauses request with category selection"""
-        category = self.get_category_choice("🚪 Select category for termination clauses")
-        
-        if category is False:
+        """Handle termination clauses request for a specific file"""
+        file_path = self.get_file_choice("🚪 Select file for termination clauses")
+        if not file_path:
             return
-        
-        print(f"\n🚪 Finding termination clauses{f' for {category}' if category else ' (all categories)'}...")
-        response = self.pipeline.find_termination_clauses(category)
-        
-        category_text = f" - {category.upper()}" if category else " - ALL CATEGORIES"
-        print(f"\n📚 TERMINATION CLAUSES{category_text}:")
+        print(f"\n🚪 Finding termination clauses for {os.path.basename(file_path)}...")
+        response = self.pipeline.find_termination_clauses_by_file(file_path)
+        print(f"\n📚 TERMINATION CLAUSES - {os.path.basename(file_path)}:")
         print("-" * 50)
-        print(response['answer'])
-        
-        # Save to file
-        response_type = f"termination_{category}" if category else "termination_all"
-        question = f"Find termination clauses in {category if category else 'all'} documents"
+        answer = response.get('answer') or response.get('content') or getattr(response, 'content', None) or str(response)
+        print(answer)
+        response_type = f"termination_{os.path.basename(file_path)}"
+        question = f"Find termination clauses in {os.path.basename(file_path)}"
         filepath = self.save_response_to_file(question, response, response_type)
         print(f"\n💾 Response saved to: {filepath}")
-        
         return response
     
     def handle_custom_question(self):
-        """Handle custom question input with category selection"""
+        """Handle custom question input for a specific file"""
         print("\n❓ Custom Question Mode")
         print("-" * 30)
-        print("Enter your question about the legal documents.")
+        print("Enter your question about a specific legal document.")
         print("Type 'back' to return to main menu.")
-        
         while True:
             question = input("\n🤔 Your question: ").strip()
-            
             if question.lower() == 'back':
                 break
-            
             if not question:
                 print("Please enter a valid question.")
                 continue
-            
-            # Get category choice
-            category = self.get_category_choice("❓ Select category for your question")
-            if category is False:
+            file_path = self.get_file_choice("❓ Select file for your question")
+            if not file_path:
                 continue
-            
-            print(f"\n🔍 Processing your question{f' for {category}' if category else ' (all categories)'}...")
+            print(f"\n🔍 Processing your question for {os.path.basename(file_path)}...")
             try:
-                response = self.pipeline.query_documents(question, category)
-                
-                category_text = f" - {category.upper()}" if category else " - ALL CATEGORIES"
-                print(f"\n💡 ANSWER{category_text}:")
+                response = self.pipeline.query_documents_by_file(question, file_path)
+                print(f"\n💡 ANSWER - {os.path.basename(file_path)}:")
                 print("-" * 50)
-                print(response['answer'])
-                
-                if response.get('sources'):
-                    sources_count = len(response['sources']) if isinstance(response['sources'], list) else response.get('total_sources', 0)
-                    print(f"\n📚 Sources: {sources_count} document(s) referenced")
-                
-                # Save to file
-                response_type = f"custom_{category}" if category else "custom_all"
+                answer = response.get('answer') or response.get('content') or getattr(response, 'content', None) or str(response)
+                print(answer)
+                response_type = f"custom_{os.path.basename(file_path)}"
                 filepath = self.save_response_to_file(question, response, response_type)
                 print(f"\n💾 Response saved to: {filepath}")
-                
-                # Ask if user wants to ask another question
                 continue_asking = input("\n❓ Ask another question? (y/n): ").strip().lower()
                 if continue_asking != 'y':
                     break
-                    
             except Exception as e:
                 print(f"❌ Error processing question: {str(e)}")
     
@@ -466,7 +437,8 @@ class InteractiveLegalRAG:
         print("4. ❓ Custom comparison question")
 
         try:
-            comp_choice = input("\nEnter comparison type (1-4): ").strip()
+            comp_choice = input("\nEnter comparison type (1-4): ")
+
             if comp_choice == "1":
                 question = "Compare the main content and key provisions of these documents."
                 response = self.pipeline.compare_documents_by_file(question, os.path.join(uploads_dir, file1), os.path.join(uploads_dir, file2))
@@ -492,7 +464,8 @@ class InteractiveLegalRAG:
 
             print(f"\n🔍 COMPARISON RESULTS: {file1} vs {file2}")
             print("-" * 60)
-            print(response.get('answer', str(response)))
+            answer = response.get('answer') or response.get('content') or getattr(response, 'content', None) or str(response)
+            print(answer)
 
             # Save to file
             filepath = self.save_response_to_file(question, response, f"{response_type}_{file1}_vs_{file2}")
@@ -514,7 +487,12 @@ class InteractiveLegalRAG:
             print(f"\n{i}. [{entry['timestamp']}] ({entry['type'].upper()})")
             print(f"   Category: {entry['category']}")
             print(f"   Q: {entry['question']}")
-            print(f"   A: {entry['answer'][:200]}{'...' if len(entry['answer']) > 200 else ''}")
+            ans = entry['answer']
+            if hasattr(ans, 'content'):
+                ans = ans.content
+            elif not isinstance(ans, str):
+                ans = str(ans)
+            print(f"   A: {ans[:200]}{'...' if len(ans) > 200 else ''}")
             print(f"   📚 Sources: {entry['sources']}")
     
     def show_response_files(self):
